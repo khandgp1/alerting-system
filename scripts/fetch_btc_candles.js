@@ -2,10 +2,29 @@ const fs = require('fs');
 const path = require('path');
 
 async function fetchBtcCandles() {
+  const configPath = path.join(__dirname, '../config/fetch_params.json');
+  if (!fs.existsSync(configPath)) {
+    console.error('Config file not found at:', configPath);
+    process.exit(1);
+  }
+
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const { startTime, endTime } = config;
+
+  // Convert EST strings to UTC milliseconds
+  // We assume the input strings are in the project's local timezone (America/New_York)
+  const startTs = new Date(startTime).getTime();
+  const endTs = new Date(endTime).getTime();
+
+  if (isNaN(startTs) || isNaN(endTs)) {
+    console.error('Invalid date format in config. Expected YYYY-MM-DD HH:mm');
+    process.exit(1);
+  }
+
   const symbol = 'BTCUSDT';
   const interval = '1h';
-  const limit = 25; // Fetch 25 to get 24 closed candles
-  const url = `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  // Binance API supports startTime and endTime parameters
+  const url = `https://api.binance.us/api/v3/klines?symbol=${symbol}&interval=${interval}&startTime=${startTs}&endTime=${endTs}&limit=1000`;
 
   try {
     const response = await fetch(url);
@@ -15,28 +34,12 @@ async function fetchBtcCandles() {
 
     const rawData = await response.json();
 
-    // Binance kline data format:
-    // [
-    //   [
-    //     1499040000000,      // Kline open time
-    //     "0.01634790",       // Open price
-    //     "0.80000000",       // High price
-    //     "0.01575800",       // Low price
-    //     "0.01577100",       // Close price
-    //     "148976.11427815",  // Volume
-    //     1499644799999,      // Kline Close time
-    //     "2434.19055334",    // Quote asset volume
-    //     308,                // Number of trades
-    //     "1756.87402397",    // Taker buy base asset volume
-    //     "28.46694368",      // Taker buy quote asset volume
-    //     "0"                 // Unused field, ignore.
-    //   ]
-    // ]
+    if (rawData.length === 0) {
+      console.log('No candles found for the specified range.');
+      return;
+    }
 
-    // Drop the last candle as it's still open
-    const closedCandles = rawData.slice(0, 24);
-
-    const formattedCandles = closedCandles.map((candle, index) => {
+    const formattedCandles = rawData.map((candle, index) => {
       const openTime = new Date(candle[0]).toLocaleString('sv-SE', { timeZone: 'America/New_York' });
       return {
         index: index + 1,
@@ -54,6 +57,7 @@ async function fetchBtcCandles() {
     let markdown = `# BTC/USDT Hourly Candles\n\n`;
     markdown += `**Source:** Binance Public API\n`;
     markdown += `**Interval:** ${interval}\n`;
+    markdown += `**Range:** ${startTime} to ${endTime} (EST)\n`;
     markdown += `**Generated At:** ${timestamp} EST\n\n`;
     markdown += `| # | Open Time (EST) | Open | High | Low | Close | Volume (BTC) |\n`;
     markdown += `|---|---|---|---|---|---|---|\n`;
@@ -65,7 +69,7 @@ async function fetchBtcCandles() {
     const outputPath = path.join(__dirname, '../data/btc_hourly_candles.md');
     fs.writeFileSync(outputPath, markdown);
 
-    console.log(`Successfully wrote 24 candles to ${outputPath}`);
+    console.log(`Successfully wrote ${formattedCandles.length} candles to ${outputPath}`);
   } catch (error) {
     console.error('Error fetching data:', error);
     process.exit(1);

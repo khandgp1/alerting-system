@@ -6,7 +6,7 @@
 2. Close Above Previous High (Indicator: Prev Candle Close/Open)
 3. Close Above Post-Signal Peak (Indicator: Peak Candle Close)
 
-**Generated At:** 2026-05-15 16:35:20 EST
+**Generated At:** 2026-05-16 18:05:09 EST
 
 | Start (EST) | End (EST) | Rule | Indicator | Status |
 |---|---|---|---|---|

@@ -58,7 +58,8 @@ function detectConfirmedUptrends() {
                     end: candles[lastGoodIndex].openTime.substring(0, 16),
                     rule: 'Three Green Candles',
                     indicator: indicator.toFixed(2),
-                    status: lastGoodIndex === candles.length - 1 ? 'Ongoing' : 'Broken'
+                    status: lastGoodIndex === candles.length - 1 ? 'Ongoing' : 'Broken',
+                    indicatorCandleIndex: i
                 });
 
                 // Skip only past the initial consecutive green streak
@@ -99,36 +100,134 @@ function detectConfirmedUptrends() {
                 end: candles[lastGoodIndex].openTime.substring(0, 16),
                 rule: 'Close Above Prev High',
                 indicator: indicator.toFixed(2),
-                status: lastGoodIndex === candles.length - 1 ? 'Ongoing' : 'Broken'
+                status: lastGoodIndex === candles.length - 1 ? 'Ongoing' : 'Broken',
+                indicatorCandleIndex: i - 1
             });
 
             // Do NOT advance i — allow every subsequent valid signal to be independently evaluated
         }
     }
 
+    // Rule 3: Close Above Post-Signal Peak
+    for (let i = 3; i < candles.length; i++) {
+        const n3 = candles[i - 3];
+        const n1 = candles[i - 1];
+        const n = candles[i];
+
+        // Signal: Candle n is green and close[n] > high[n-1], but fails open[n-1] < open[n-3]
+        if (n.close > n.open && n.close > n1.high && !(n1.open < n3.open)) {
+            // Find the most recent confirmed uptrend prior to candle n
+            const priorRanges = ranges.filter(r => r.start < n.openTime.substring(0, 16));
+            if (priorRanges.length === 0) continue;
+
+            // Get the latest prior range
+            priorRanges.sort((a, b) => a.start.localeCompare(b.start));
+            const lastRange = priorRanges[priorRanges.length - 1];
+
+            // Scan the window between lastRange.indicatorCandleIndex and i for the green candle with the highest close
+            let peakCandle = null;
+            let peakIndex = -1;
+            for (let k = lastRange.indicatorCandleIndex + 1; k < i; k++) {
+                const c = candles[k];
+                if (c.close > c.open) {
+                    if (!peakCandle || c.close > peakCandle.close) {
+                        peakCandle = c;
+                        peakIndex = k;
+                    }
+                }
+            }
+
+            if (!peakCandle) continue;
+
+            const indicator = peakCandle.close;
+
+            // Confirmation: n.close > indicator
+            if (n.close > indicator) {
+                let lastGoodIndex = i;
+                for (let j = i + 1; j < candles.length; j++) {
+                    if (candles[j].low > indicator) {
+                        lastGoodIndex = j;
+                    } else {
+                        break;
+                    }
+                }
+
+                ranges.push({
+                    start: n.openTime.substring(0, 16),
+                    end: candles[lastGoodIndex].openTime.substring(0, 16),
+                    rule: 'Close Above Post-Signal Peak',
+                    indicator: indicator.toFixed(2),
+                    status: lastGoodIndex === candles.length - 1 ? 'Ongoing' : 'Broken',
+                    indicatorCandleIndex: peakIndex
+                });
+            }
+        }
+    }
+
     // Sort ranges by start time
     ranges.sort((a, b) => a.start.localeCompare(b.start));
+
+    // Keep only the first confirmed trend per unique indicator
+    const seenIndicators = new Set();
+    const uniqueRanges = [];
+    for (const r of ranges) {
+        if (!seenIndicators.has(r.indicator)) {
+            seenIndicators.add(r.indicator);
+            uniqueRanges.push(r);
+        }
+    }
+
+    // Apply cooldown: no new trend until a red candle closes after the last accepted trend
+    const finalRanges = [];
+    let lastAcceptedEnd = null;
+
+    for (const r of uniqueRanges) {
+        if (lastAcceptedEnd === null) {
+            // First trend — always accept
+            finalRanges.push(r);
+            lastAcceptedEnd = r.end;
+        } else if (r.start <= lastAcceptedEnd) {
+            // New trend starts while previous trend is still active — block
+            continue;
+        } else {
+            // Find the first red candle after lastAcceptedEnd
+            const firstRedAfterEnd = candles.find(c =>
+                c.openTime.substring(0, 16) >= lastAcceptedEnd &&
+                c.close < c.open
+            );
+            if (firstRedAfterEnd && r.start >= firstRedAfterEnd.openTime.substring(0, 16)) {
+                // A red candle has closed before this new trend — accept
+                finalRanges.push(r);
+                lastAcceptedEnd = r.end;
+            }
+            // Otherwise: no red candle before this trend — block
+        }
+    }
+
+    // Exclude trends that only lasted within a single hour (start === end)
+    const filteredRanges = finalRanges.filter(r => r.start !== r.end);
 
     const timestamp = new Date().toLocaleString('sv-SE', { timeZone: 'America/New_York' });
     let output = `# Confirmed Uptrend Ranges\n\n`;
     output += `**Source:** data/btc_hourly_candles.md\n`;
     output += `**Strategies:**\n`;
     output += `1. Three Consecutive Green Candles (Indicator: 1st Candle Close)\n`;
-    output += `2. Close Above Previous High (Indicator: Prev Candle Close/Open)\n\n`;
+    output += `2. Close Above Previous High (Indicator: Prev Candle Close/Open)\n`;
+    output += `3. Close Above Post-Signal Peak (Indicator: Peak Candle Close)\n\n`;
     output += `**Generated At:** ${timestamp} EST\n\n`;
 
-    if (ranges.length === 0) {
+    if (filteredRanges.length === 0) {
         output += `No confirmed uptrend ranges found.\n`;
     } else {
         output += `| Start (EST) | End (EST) | Rule | Indicator | Status |\n`;
         output += `|---|---|---|---|---|\n`;
-        ranges.forEach(r => {
+        filteredRanges.forEach(r => {
             output += `| ${r.start} | ${r.end} | ${r.rule} | ${r.indicator} | ${r.status} |\n`;
         });
     }
 
     fs.writeFileSync(outputPath, output);
-    console.log(`Successfully identified ${ranges.length} confirmed uptrend ranges and wrote to ${outputPath}`);
+    console.log(`Successfully identified ${filteredRanges.length} confirmed unique indicator uptrend ranges (with cooldown, same-hour excluded) and wrote to ${outputPath}`);
 
 }
 
